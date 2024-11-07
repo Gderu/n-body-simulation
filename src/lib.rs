@@ -1,8 +1,9 @@
 use std::array;
+use std::ops::Div;
 use std::time::Instant;
 use pyo3::prelude::*;
 use numpy::{PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use numpy::ndarray::{ArrayView1, ArrayView2, Axis};
+use numpy::ndarray::{s, ArrayView1, ArrayView2, Axis};
 use rayon::prelude::*;
 use itertools::Itertools;
 use rayon::ThreadPoolBuilder;
@@ -50,7 +51,7 @@ fn test(positions: PyReadonlyArray2<'_, f64>, masses: PyReadonlyArray1<'_, f64>)
     let pos_array = positions.as_array();
     let masses_array = masses.as_array();
     let start = Instant::now();
-    let mut bounds = vec![];
+    let mut bounds = (0., 0.);
     for _ in 0..100 {
         bounds = get_bounds(pos_array);
     }
@@ -78,27 +79,35 @@ fn calc_acceleration_barnes_hut(positions: PyReadonlyArray2<'_, f64>,
 }
 
 
-fn get_bounds(positions: ArrayView2<f64>) -> Vec<(f64, f64)> {
-    let mut res = positions.axis_iter(Axis(1)).zip(positions.outer_iter().next().unwrap().iter()).enumerate().par_bridge().map(|(i, (arr, &first))| {
-        (i, arr.iter().fold((first, first), |(a, b), &x| (a.min(x), b.max(x))))
-    }).collect::<Vec<_>>();
-    res.par_sort_by(|a , b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Greater));
-    res.iter().map(|x| x.1).collect()
+fn get_bounds(positions: ArrayView2<f64>) -> (f64, f64) {
+    let num_threads = 8;
+    let chunk_size = positions.shape()[0].div_ceil(num_threads);
+    (0..num_threads).into_par_iter().map(|i| {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(positions.shape()[0]);
+
+        if start > end {
+            return (f64::INFINITY, f64::NEG_INFINITY);
+        }
+
+        positions.slice(s![start..end, ..]).iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY),
+                  |(min, max), &x| (min.min(x), max.max(x)))
+    }).reduce(|| (f64::INFINITY, f64::NEG_INFINITY),
+              |x, y| (x.0.min(y.0), x.1.max(y.1)))
 }
 
 
 // converting the positions in floating point to be in a 1e9 box in u32 coords,
 // then converting those coords to morton code, and sorting the resulting array
-fn convert_to_morton_code(positions: ArrayView2<f64>, bounds: &Vec<(f64, f64)>) -> Vec<(u128, usize)> {
-    let diffs = [(2u64.pow(32) - 1) as f64 / (bounds[0].1 - bounds[0].0),
-        (2u64.pow(32) - 1) as f64  / (bounds[1].1 - bounds[1].0),
-        (2u64.pow(32) - 1) as f64  / (bounds[2].1 - bounds[2].0)];
+fn convert_to_morton_code(positions: ArrayView2<f64>, bounds: &(f64, f64)) -> Vec<(u128, usize)> {
+    let diff = (2u64.pow(32) - 1) as f64 / (bounds.1 - bounds.0);
 
     let mut morton_codes: Vec<(u128, usize)> = vec![(0, 0); positions.shape()[0]];
     morton_codes.par_iter_mut().enumerate().for_each(|(i, elem)| {
-        *elem = (morton_encode([((positions[[i, 0]] - bounds[0].0) * diffs[0]) as u32,
-            ((positions[[i, 0]] - bounds[1].0) *  diffs[1]) as u32,
-            ((positions[[i, 0]] - bounds[2].0) *  diffs[2]) as u32]), i);
+        *elem = (morton_encode([((positions[[i, 0]] - bounds.0) * diff) as u32,
+            ((positions[[i, 1]] - bounds.0) *  diff) as u32,
+            ((positions[[i, 2]] - bounds.0) *  diff) as u32]), i);
     });
 
     morton_codes.par_sort_by(|a , b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Greater));
