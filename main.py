@@ -1,5 +1,3 @@
-import os
-
 from PyQt5 import QtCore
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
@@ -10,7 +8,7 @@ import star_simulation_rust
 N = 1000
 WIDTH, HEIGHT = 800, 600
 FPS = 30
-dt = 1e15
+dt = None
 
 a = []
 c = 0
@@ -74,6 +72,8 @@ def update_draw(positions, velocities, masses, bodies, divide_by):
 
 
 def run_earth_moon_sun_system(w, t):
+    global dt
+    dt = 5e4
     w.addItem(gl.GLGridItem())
 
     # Sun, Earth, and the Moon
@@ -100,6 +100,8 @@ def run_earth_moon_sun_system(w, t):
 
 
 def n_stars(n: int, w: gl.GLViewWidget, t: QtCore.QTimer):
+    global dt
+    dt = 1e15
     # w.addItem(gl.GLGridItem())
 
     positions = (np.random.rand(n, 3) - 0.5) * n * 4.73e+16
@@ -129,5 +131,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    n = 1000000
+    positions = np.random.rand(n, 3) - 0.5
+    masses = np.random.rand(n)
 
+    star_simulation_rust.test(positions, masses)
